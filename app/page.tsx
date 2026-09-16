@@ -1,69 +1,111 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
 
 export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [inp, setInp] = useState<number>(0);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Verificar si el navegador soporta SharedArrayBuffer con aislamiento (RT-2, RT-5)
+    if (typeof SharedArrayBuffer === 'undefined') {
+      setErrorMsg('SharedArrayBuffer no está habilitado. Asegúrate de configurar next.config.ts y reiniciar el servidor npm.');
+      return;
+    }
+
+    const TOTAL_CHANNELS = 27;
+    const HISTORY_SIZE = 120000;
+
+    const sharedBuffer = new SharedArrayBuffer(TOTAL_CHANNELS * HISTORY_SIZE * 4);
+    const dataArray = new Float32Array(sharedBuffer);
+
+    const stateBuffer = new SharedArrayBuffer(TOTAL_CHANNELS * 4);
+    const stateArray = new Int32Array(stateBuffer);
+
+    // Conectar el Web Worker desde la carpeta public
+    const worker = new Worker('/worker.js');
+    worker.postMessage({ type: 'INIT', sharedBuffer, stateBuffer });
+
+    const ws = new WebSocket('ws://localhost:3000');
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        worker.postMessage(event.data, [event.data]);
+      }
+    };
+
+    if ('PerformanceObserver' in window) {
+      try {
+        const observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            if (entry.interactionId) setInp(Math.round(entry.duration));
+          }
+        });
+        observer.observe({ type: 'event', buffered: true, durationThreshold: 16 });
+      } catch (e) {
+        // Ignorar en navegadores que no soporten la API
+      }
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight - 50;
+
+    let animationId: number;
+    const render = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const chHeight = canvas.height / TOTAL_CHANNELS;
+
+      for (let ch = 0; ch < TOTAL_CHANNELS; ch++) {
+        ctx.beginPath();
+        ctx.strokeStyle = ch % 3 === 2 ? '#00ff00' : '#00aaff';
+
+        const writePos = Atomics.load(stateArray, ch);
+        const offset = ch * HISTORY_SIZE;
+
+        for (let x = 0; x < canvas.width; x++) {
+          const sampleIdx = (writePos - canvas.width + x + HISTORY_SIZE) % HISTORY_SIZE;
+          const val = dataArray[offset + sampleIdx];
+          const y = (ch * chHeight) + (chHeight / 2) - (val / 10);
+
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      animationId = requestAnimationFrame(render);
+    };
+
+    render();
+
+    return () => {
+      cancelAnimationFrame(animationId);
+      worker.terminate();
+      ws.close();
+    };
+  }, []);
+
+  if (errorMsg) {
+    return (
+      <main style={{ padding: '20px', color: '#ff4444', backgroundColor: '#121212', height: '100vh' }}>
+        <h2>Error de Configuración</h2>
+        <p>{errorMsg}</p>
       </main>
-    </div>
+    );
+  }
+
+  return (
+    <main style={{ backgroundColor: '#121212', height: '100vh', color: '#fff', overflow: 'hidden' }}>
+      <div style={{ padding: '10px', display: 'flex', justifyContent: 'space-between', background: '#1e1e1e' }}>
+        <span>CONSOLA SISMO-VOLCÁNICA</span>
+        <span>INP: {inp} ms</span>
+      </div>
+      <canvas ref={canvasRef} />
+    </main>
   );
 }
