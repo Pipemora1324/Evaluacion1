@@ -8,9 +8,9 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    // Verificar si el navegador soporta SharedArrayBuffer con aislamiento (RT-2, RT-5)
+    // Validar aislamiento de origen para SharedArrayBuffer
     if (typeof SharedArrayBuffer === 'undefined') {
-      setErrorMsg('SharedArrayBuffer no está habilitado. Asegúrate de configurar next.config.ts y reiniciar el servidor npm.');
+      setErrorMsg('SharedArrayBuffer no está habilitado. Verifica next.config.ts.');
       return;
     }
 
@@ -23,7 +23,6 @@ export default function Home() {
     const stateBuffer = new SharedArrayBuffer(TOTAL_CHANNELS * 4);
     const stateArray = new Int32Array(stateBuffer);
 
-    // Conectar el Web Worker desde la carpeta public
     const worker = new Worker('/worker.js');
     worker.postMessage({ type: 'INIT', sharedBuffer, stateBuffer });
 
@@ -35,16 +34,20 @@ export default function Home() {
       }
     };
 
+    // Medición de latencia INP adaptada para TypeScript
     if ('PerformanceObserver' in window) {
       try {
         const observer = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
-            if (entry.interactionId) setInp(Math.round(entry.duration));
+            const performanceEntry = entry as any;
+            if (performanceEntry.interactionId) {
+              setInp(Math.round(performanceEntry.duration));
+            }
           }
         });
-        observer.observe({ type: 'event', buffered: true, durationThreshold: 16 });
+        observer.observe({ type: 'event', buffered: true } as PerformanceObserverInit);
       } catch (e) {
-        // Ignorar en navegadores que no soporten la API
+        // Ignorar si el navegador no admite esta métrica
       }
     }
 
